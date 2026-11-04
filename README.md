@@ -49,8 +49,8 @@
 使用 Swift、AppKit 和系统框架，不依赖第三方运行库。需要安装 Xcode Command Line Tools。
 
 ```sh
-./build.sh --test
-./build.sh
+bash build.sh --test
+bash build.sh
 ```
 
 构建脚本按当前 Mac 架构编译，输出 `dist/角落阅读.app` 与 `dist/角落阅读-Mac.zip`。不会自动安装应用或修改 TXT 默认打开方式。
@@ -58,7 +58,7 @@
 可指定独立输出目录：
 
 ```sh
-CORNER_READER_DIST_DIR="$PWD/dist/preview" ./build.sh
+CORNER_READER_DIST_DIR="$PWD/dist/preview" bash build.sh
 ```
 
 需要 macOS 图形会话时，还可运行使用临时数据的离屏界面自测：
