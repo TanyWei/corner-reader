@@ -1,0 +1,11 @@
+.DS_Store
+dist/
+.build/
+.swiftpm/
+.module-cache/
+ModuleCache/
+*.dSYM/
+*.xcuserstate
+xcuserdata/
+.env
+.env.*
