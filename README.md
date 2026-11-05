@@ -2,7 +2,7 @@
 
 一个原生 Mac TXT 小说阅读小浮窗。把故事放在屏幕角落，随时读一会儿。
 
-[下载 1.0.1 · Apple Silicon](https://github.com/TanyWei/corner-reader/raw/refs/heads/main/Downloads/CornerReader-1.0.1-AppleSilicon.zip)
+[下载 1.0.2 · Apple Silicon](https://github.com/TanyWei/corner-reader/raw/refs/heads/main/Downloads/CornerReader-1.0.2-AppleSilicon.zip)
 
 <p>
   <img src="docs/images/02-reading-paper.png" width="280" alt="纸张主题阅读界面">
@@ -21,6 +21,10 @@
 - 全程本地运行，无需账户或网络；原始 TXT 不会被修改。
 
 <img src="docs/images/05-chapters-bounded.png" width="240" alt="固定高度、内部滚动的章节目录">
+
+## 1.0.2 更新
+
+修复长篇小说拖动窗口边缘缩放时的卡顿。正文只对当前阅读区域附近的有限文本分段排版，缩放时避免整本书重排；阅读进度仍按全书位置保存，前后阅读和章节跳转保持连续。
 
 ## 下载与使用
 
@@ -67,7 +71,7 @@ CORNER_READER_DIST_DIR="$PWD/dist/preview" bash build.sh
 dist/角落阅读.app/Contents/MacOS/CornerReader --ui-smoke-test /tmp/CornerReaderPreview
 ```
 
-核心测试覆盖中文编码、章节与字符位置、导入校验、本地副本、进度恢复和导入失败保护。界面自测覆盖 2000 章目录、内部滚动、章节跳转、主题、字号、置顶和进度恢复。
+核心测试覆盖中文编码、章节与字符位置、导入校验、本地副本、进度恢复、导入失败保护，以及长文本分段边界与全书位置映射。界面自测覆盖 2000 章目录、内部滚动、章节跳转、主题、字号、置顶和进度恢复。
 
 ## 目录
 

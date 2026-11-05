@@ -14,6 +14,12 @@ if [[ "${1:-}" == "--test" ]]; then
     "$PROJECT_DIR/Tests/ReaderCoreTests.swift" \
     -o "$TEST_DIR/ReaderCoreTests"
   "$TEST_DIR/ReaderCoreTests"
+  xcrun swiftc -swift-version 5 -parse-as-library -module-cache-path "$TEST_DIR/ModuleCache" \
+    "$PROJECT_DIR/Sources/ReaderCore.swift" \
+    "$PROJECT_DIR/Sources/ReaderTextWindow.swift" \
+    "$PROJECT_DIR/Tests/ReaderTextWindowTests.swift" \
+    -o "$TEST_DIR/ReaderTextWindowTests"
+  "$TEST_DIR/ReaderTextWindowTests"
   exit 0
 fi
 
