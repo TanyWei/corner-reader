@@ -7,6 +7,8 @@ final class ReaderController: NSObject, NSWindowDelegate {
     private(set) var book: ReaderBook?
     private(set) var preferences = ReaderPreferences()
     private(set) var isImporting = false
+    private(set) var renderedWindow: ReaderTextWindow?
+    private(set) var isLiveResizing = false
     private var isRestoring = false
     private var progressOffset = 0
     private var saveTask: DispatchWorkItem?
@@ -15,6 +17,12 @@ final class ReaderController: NSObject, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var pinMenuItem: NSMenuItem?
     private var chapterPopover: NSPopover?
+    private var resizeAnchor: ReadingAnchor?
+    private var rebaseScheduled = false
+    private struct ReadingAnchor {
+        let offset: Int
+        let lineDelta: CGFloat
+    }
     var onImportFinished: (() -> Void)?
 
     init(store: ReaderStore = ReaderStore(), testing: Bool = false) {
@@ -112,12 +120,13 @@ final class ReaderController: NSObject, NSWindowDelegate {
         isRestoring = true
         book = newBook
         progressOffset = newBook?.clampedOffset(offset) ?? 0
+        renderedWindow = newBook?.window(aroundGlobalOffset: progressOffset)
         view.showBook(newBook != nil)
         view.title.stringValue = newBook?.title ?? "角落阅读"
         view.title.toolTip = newBook?.title ?? "拖动顶部，把阅读放在任意角落"
         view.title.setAccessibilityValue(view.title.stringValue)
         view.panel.title = newBook.map { "\($0.title) · 角落阅读" } ?? "角落阅读"
-        view.text.string = newBook?.text ?? ""
+        view.text.string = renderedWindow?.text ?? ""
         applyTextStyle()
         view.surface.layoutSubtreeIfNeeded()
         scrollTo(progressOffset)
@@ -134,11 +143,15 @@ final class ReaderController: NSObject, NSWindowDelegate {
         let style: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: view.palette.ink, .paragraphStyle: paragraph]
         view.text.textStorage?.setAttributes(style, range: NSRange(location: 0, length: view.text.string.utf16.count))
         view.text.typingAttributes = style
-        // NSTextView can otherwise keep a partial document height until the next visible draw.
-        // Resolve the layout before a chapter jump or a font change constrains the scroll origin.
+        layoutRenderedText()
+    }
+
+    private func layoutRenderedText() {
         view.surface.layoutSubtreeIfNeeded()
         view.scroll.tile()
         if let container = view.text.textContainer {
+            // Reflow only the bounded slice, including after width tracking resumes.
+            container.containerSize.width = max(1, view.text.bounds.width - 2 * view.text.textContainerInset.width)
             view.text.layoutManager?.ensureLayout(for: container)
             view.text.sizeToFit()
         }
@@ -157,21 +170,21 @@ final class ReaderController: NSObject, NSWindowDelegate {
     }
 
     @objc func togglePin() {
-        guard !isImporting else { return }
+        guard !isImporting, !isLiveResizing else { return }
         preferences.pinned.toggle()
         applyPreferences()
         _ = saveNow(reportError: true)
     }
 
     @objc func toggleTheme() {
-        guard !isImporting else { return }
+        guard !isImporting, !isLiveResizing else { return }
         preferences.theme = preferences.theme == "night" ? "paper" : "night"
         applyPreferences()
         _ = saveNow(reportError: true)
     }
 
     func setFontSize(_ size: Double) {
-        guard !isImporting else { return }
+        guard !isImporting, !isLiveResizing else { return }
         preferences.fontSize = min(max(size, 12), 30)
         applyPreferences()
         _ = saveNow(reportError: true)
@@ -223,48 +236,133 @@ final class ReaderController: NSObject, NSWindowDelegate {
         guard let book else { return }
         isRestoring = true
         progressOffset = book.clampedOffset(offset)
+        replaceRenderWindow(around: progressOffset)
         scrollTo(progressOffset)
         updateProgressLabel()
         isRestoring = false
         _ = saveNow(reportError: true)
     }
 
-    private func scrollTo(_ offset: Int) {
-        guard let book, book.utf16Count > 0, let layout = view.text.layoutManager, let container = view.text.textContainer else { return }
-        let index = min(book.clampedOffset(offset), book.utf16Count - 1)
+    private func replaceRenderWindow(around offset: Int) {
+        guard let book else { return }
+        let next = book.window(aroundGlobalOffset: offset)
+        guard next.range != renderedWindow?.range else { return }
+        renderedWindow = next
+        view.text.string = next.text
+        applyTextStyle()
+    }
+
+    private func scrollTo(_ offset: Int, lineDelta: CGFloat = -12) {
+        guard let book, book.utf16Count > 0 else { return }
+        let lastCharacter = book.clampedOffset(book.utf16Count - 1)
+        let global = min(book.clampedOffset(offset), lastCharacter)
+        if renderedWindow?.localOffset(forGlobal: global) == nil || global == renderedWindow.map({ NSMaxRange($0.range) }) {
+            replaceRenderWindow(around: global)
+        }
+        guard let renderedWindow, let layout = view.text.layoutManager else { return }
+        guard let index = renderedWindow.localOffset(forGlobal: global), index < renderedWindow.range.length else { return }
         let characterRange = NSRange(location: index, length: 1)
         layout.ensureLayout(forCharacterRange: characterRange)
         let glyphs = layout.glyphRange(forCharacterRange: characterRange, actualCharacterRange: nil)
-        let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
-        let y = max(0, rect.minY + view.text.textContainerInset.height - 12)
+        guard glyphs.location < layout.numberOfGlyphs else { return }
+        let rect = layout.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        let y = max(0, rect.minY + view.text.textContainerOrigin.y + lineDelta)
         view.scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
         view.scroll.reflectScrolledClipView(view.scroll.contentView)
     }
 
     private func visibleOffset() -> Int {
-        guard let book, let layout = view.text.layoutManager, let container = view.text.textContainer else { return 0 }
+        readingAnchor().offset
+    }
+
+    private func readingAnchor() -> ReadingAnchor {
+        guard let book, let renderedWindow, let layout = view.text.layoutManager, let container = view.text.textContainer else { return ReadingAnchor(offset: 0, lineDelta: 0) }
         let point = NSPoint(x: 0, y: max(0, view.scroll.contentView.bounds.minY - view.text.textContainerOrigin.y + 1))
         let glyph = layout.glyphIndex(for: point, in: container)
-        guard glyph < layout.numberOfGlyphs else { return book.utf16Count }
-        return book.clampedOffset(layout.characterIndexForGlyph(at: glyph))
+        guard glyph < layout.numberOfGlyphs else { return ReadingAnchor(offset: NSMaxRange(renderedWindow.range), lineDelta: 0) }
+        let offset = book.clampedOffset(renderedWindow.globalOffset(forLocal: layout.characterIndexForGlyph(at: glyph)))
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return ReadingAnchor(offset: offset, lineDelta: view.scroll.contentView.bounds.minY - line.minY - view.text.textContainerOrigin.y)
     }
 
     private func didScroll() {
-        guard !isRestoring, !isImporting, book != nil else { return }
+        guard !isRestoring, !isImporting, !isLiveResizing, book != nil else { return }
         progressOffset = visibleOffset()
         updateProgressLabel()
+        scheduleWindowRebase()
         saveTask?.cancel()
         let task = DispatchWorkItem { [weak self] in _ = self?.saveNow(reportError: false) }
         saveTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: task)
     }
 
+    private func scheduleWindowRebase() {
+        guard !rebaseScheduled, !isRestoring, !isImporting, !isLiveResizing, !view.text.isSelectingText else { return }
+        rebaseScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.rebaseScheduled = false
+            self.rebaseIfNeeded()
+        }
+    }
+
+    func rebaseIfNeeded() {
+        guard !isRestoring, !isImporting, !isLiveResizing, !view.text.isSelectingText,
+              let book, let renderedWindow else { return }
+        let anchor = readingAnchor()
+        let local = anchor.offset - renderedWindow.range.location
+        let nearStart = renderedWindow.range.location > 0 && local < 2_048
+        let nearEnd = NSMaxRange(renderedWindow.range) < book.utf16Count && local > renderedWindow.range.length - 4_096
+        guard nearStart || nearEnd else { return }
+        let next = book.window(aroundGlobalOffset: anchor.offset)
+        guard next.range != renderedWindow.range else { return }
+        let selection = view.text.selectedRange()
+        let selected = selection.location == NSNotFound ? NSRange(location: 0, length: 0) : selection
+        let globalSelection = NSRange(location: renderedWindow.range.location + selected.location, length: selected.length)
+        // Keep overlapping selections; an old off-screen selection must not stop reading.
+        let preserveSelection = selected.length > 0 && globalSelection.location >= next.range.location && NSMaxRange(globalSelection) <= NSMaxRange(next.range)
+        isRestoring = true
+        progressOffset = anchor.offset
+        replaceRenderWindow(around: anchor.offset)
+        scrollTo(anchor.offset, lineDelta: anchor.lineDelta)
+        if preserveSelection {
+            view.text.setSelectedRange(NSRange(location: globalSelection.location - next.range.location, length: globalSelection.length))
+        }
+        updateProgressLabel()
+        isRestoring = false
+    }
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        guard !isLiveResizing, let window = notification.object as? NSWindow, window === view.panel else { return }
+        resizeAnchor = readingAnchor()
+        saveTask?.cancel()
+        chapterPopover?.performClose(nil)
+        isLiveResizing = true
+        view.text.textContainer?.widthTracksTextView = false
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard isLiveResizing, let window = notification.object as? NSWindow, window === view.panel else { return }
+        isRestoring = true
+        view.text.textContainer?.widthTracksTextView = true
+        layoutRenderedText()
+        if let anchor = resizeAnchor, book != nil {
+            progressOffset = anchor.offset
+            scrollTo(anchor.offset, lineDelta: anchor.lineDelta)
+        }
+        updateProgressLabel()
+        resizeAnchor = nil
+        isRestoring = false
+        isLiveResizing = false
+        _ = saveNow(reportError: false)
+    }
+
     private func updateProgressLabel() {
         guard let book else { view.progress.stringValue = "随时读一会儿"; return }
         let documentHeight = view.text.frame.height
         let viewport = view.scroll.contentView.bounds
-        let complete = (view.text.layoutManager?.firstUnlaidCharacterIndex() ?? 0) >= book.utf16Count
-        let atEnd = complete && documentHeight > 0 && viewport.maxY >= documentHeight - 2
+        let complete = (view.text.layoutManager?.firstUnlaidCharacterIndex() ?? 0) >= (renderedWindow?.range.length ?? 0)
+        let atEnd = NSMaxRange(renderedWindow?.range ?? NSRange(location: 0, length: 0)) == book.utf16Count && complete && documentHeight > 0 && viewport.maxY >= documentHeight - 2
         let fraction = atEnd ? 1.0 : Double(progressOffset) / Double(max(1, book.utf16Count))
         view.progress.stringValue = String(format: "%.1f%%", min(max(fraction, 0), 1) * 100)
         let current = book.chapters.last(where: { $0.offset <= progressOffset })
@@ -274,7 +372,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
 
     @discardableResult
     func saveNow(reportError: Bool = false) -> Bool {
-        guard !isImporting else { return false }
+        guard !isImporting, !isLiveResizing else { return false }
         saveTask?.cancel()
         do {
             try store.saveProgress(progressOffset, preferences: preferences)

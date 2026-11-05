@@ -75,6 +75,14 @@ final class ReaderSurface: NSView {
 
 final class ReaderTextView: NSTextView {
     var onDrop: ((URL) -> Void)?
+    private(set) var isSelectingText = false
+    override func mouseDown(with event: NSEvent) {
+        isSelectingText = true
+        defer {
+            isSelectingText = false
+        }
+        super.mouseDown(with: event)
+    }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { ReaderDrop.accepts(sender) ? .copy : [] }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { ReaderDrop.accepts(sender) ? .copy : [] }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { ReaderDrop.accepts(sender) }

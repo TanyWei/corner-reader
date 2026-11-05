@@ -101,6 +101,7 @@ enum ReaderUITests {
         try snapshot(view, to: outputDirectory.appendingPathComponent("04-minimum-size.png"))
         try require(try String(contentsOf: source, encoding: .utf8) == content, "Import must leave original TXT unchanged")
         try require(reader.windowShouldClose(view.panel) == false, "Closing must hide the utility so the menu bar can reopen it")
+        try ReaderResizeTests.run(temporary: temporary, outputDirectory: outputDirectory)
         print("Verified: bounded 2,000-chapter picker, scrolling to current / final chapter, selection jump, empty list, empty state, import callback, full text, local save/restore, theme, font, pin, minimum layout, original preservation, close behavior.")
     }
 
